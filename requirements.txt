@@ -1,0 +1,7 @@
+numpy
+statsmodels
+pandas
+matplotlib
+fastdtw
+scipy
+pmdarima==2.0.4
