@@ -4,8 +4,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import statsmodels.api as sm
 import pmdarima as pm
+import scipy.stats as stats
 
-path = r"C:\Users\Sina.Mokhtar.XLSCIENTIFIC\Documents\Problems\AD"
+path = r"C:\Users\sina.mokhtar\Documents\problems\Copula_AD"
+
 
 def read_time_series(file_name):
     eq_raw = pd.read_csv(
@@ -134,17 +136,28 @@ eq_raw_afi = read_time_series(file_name = r"data\fdsnws-dataselect_2024-10-22t00
 
 # Extract ARIMA coefficients
 coefficients = extract_arima_coefficients(eq_raw_afi["Sample"])
+# select all exept the last one
+
+coefficients[-1]
+# >>> coefficients
+# ar.L1     2.562053e+00
+# ar.L2    -2.405983e+00
+# ar.L3     1.064306e+00
+# ar.L4    -2.215547e-01
+# sigma2    1.979285e+06
+v = coefficients[-1]
 
 # simulate data
 simulated_data = simulate_arima_exog(
+    
     c=0, 
-    phi=np.array([1.282111, -0.526951, 0.870368, -0.488092, -0.143402]),  # AR coefficients
+    phi=np.array([2.562053, -2.405983, 1.064306, -.2215547]),  # AR coefficients
     theta=np.array([0]),  # MA coefficients
     beta=np.array([0.5, 0.8]),  # Exogenous variable coefficients
     omega_mean=np.array([0, 0, 0]),  # Mean of error terms
-    omega_Sigma=np.array([[1, 0.7, 0.7], 
-                           [0.7, 1, 0.7], 
-                           [0.7, 0.7, 1]]),  # Covariance of error terms
+    omega_Sigma=np.array([[v, 0.7, 0.7], 
+                          [0.7, v, 0.7], 
+                          [0.7, 0.7, v]]),  # Covariance of error terms
     initial_state=np.array([1, 1, 1, 1, 1]),  # Initial state
     n=100000,  # Number of time steps
     seed=534
@@ -152,23 +165,19 @@ simulated_data = simulate_arima_exog(
 
 plot_time_series(simulated_data, titles=["Y", "X1", "X2" ])
 
-earthquake_data = add_earthquakes(simulated_data, num_earthquakes=4, scale=40, duration=200)
+earthquake_data = add_earthquakes(simulated_data, num_earthquakes=3, scale=20000, duration=200)
 plot_time_series(earthquake_data, titles=["Y", "X1", "X2" ])
 
  
-sigma2_values = compute_sigma2_values(earthquake_data, window_size=200, overlap_size=20, order=(1,1,1))
+sigma2_values = compute_sigma2_values(earthquake_data, window_size=500, overlap_size=100, order=(1,1,1))
 plot_time_series(sigma2_values, titles=["Y", "X1", "X2"])
 
 
-import scipy.stats as stats
-import numpy as np
-import matplotlib.pyplot as plt
-import scipy.stats as stats
 
-def plot_anomalies_histogram_chi2(sigma2_values):
+def plot_anomalies_histogram_chi2(sigma2_values, dof):
     # Compute 95% confidence intervals using Chi-Square distribution
     confidence_intervals = []
-    dof = len(sigma2_values) - 1  # Degrees of freedom
+
 
     for i in range(sigma2_values.shape[1]):
         mean = np.mean(sigma2_values[:, i])
@@ -198,7 +207,7 @@ def plot_anomalies_histogram_chi2(sigma2_values):
     plt.show()
 
 # Example usage:
-plot_anomalies_histogram_chi2(sigma2_values)
+plot_anomalies_histogram_chi2(sigma2_values, dof=499)
 
 
 
