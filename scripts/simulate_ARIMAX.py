@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import statsmodels.api as sm
 import pmdarima as pm
 import scipy.stats as stats
+import seaborn as sns
 
 path = r"C:\Users\sina.mokhtar\Documents\problems\Copula_AD"
 
@@ -135,17 +136,17 @@ def extract_arima_coefficients(y_series):
 eq_raw_afi = read_time_series(file_name = r"data\fdsnws-dataselect_2024-10-22t00_42_55z_AFI.csv")
 
 # Extract ARIMA coefficients
-coefficients = extract_arima_coefficients(eq_raw_afi["Sample"])
+# coefficients = extract_arima_coefficients(eq_raw_afi["Sample"])
 # select all exept the last one
 
-coefficients[-1]
+#coefficients[-1]
 # >>> coefficients
 # ar.L1     2.562053e+00
 # ar.L2    -2.405983e+00
 # ar.L3     1.064306e+00
 # ar.L4    -2.215547e-01
 # sigma2    1.979285e+06
-v = coefficients[-1]
+v = 1.979285e+06
 
 # simulate data
 simulated_data = simulate_arima_exog(
@@ -153,65 +154,115 @@ simulated_data = simulate_arima_exog(
     c=0, 
     phi=np.array([2.562053, -2.405983, 1.064306, -.2215547]),  # AR coefficients
     theta=np.array([0]),  # MA coefficients
-    beta=np.array([0.5, 0.8]),  # Exogenous variable coefficients
-    omega_mean=np.array([0, 0, 0]),  # Mean of error terms
-    omega_Sigma=np.array([[v, 0.7, 0.7], 
-                          [0.7, v, 0.7], 
-                          [0.7, 0.7, v]]),  # Covariance of error terms
-    initial_state=np.array([1, 1, 1, 1, 1]),  # Initial state
-    n=100000,  # Number of time steps
+    beta=np.array([0.1]),  # Exogenous variable coefficients
+    omega_mean=np.array([0, 0]),  # Mean of error terms
+    omega_Sigma=np.array([[v, 0.7], 
+                          [0.7, v]]),  # Covariance of error terms
+    initial_state=np.array([1, 1, 1, 1]),  # Initial state
+    n=1000000,  # Number of time steps
     seed=534
 )
 
-plot_time_series(simulated_data, titles=["Y", "X1", "X2" ])
+plot_time_series(simulated_data, titles=["Y", "X1"])
 
 earthquake_data = add_earthquakes(simulated_data, num_earthquakes=3, scale=20000, duration=200)
-plot_time_series(earthquake_data, titles=["Y", "X1", "X2" ])
+plot_time_series(earthquake_data, titles=["Y", "X1" ])
 
  
 sigma2_values = compute_sigma2_values(earthquake_data, window_size=500, overlap_size=100, order=(1,1,1))
-plot_time_series(sigma2_values, titles=["Y", "X1", "X2"])
+plot_time_series(sigma2_values, titles=["Y", "X1"])
 
 
 
-def plot_anomalies_histogram_chi2(sigma2_values, dof):
+def plot_anomalies_histogram_chi2(sigma2_values):
     # Compute 95% confidence intervals using Chi-Square distribution
-    confidence_intervals = []
-
-
-    for i in range(sigma2_values.shape[1]):
-        mean = np.mean(sigma2_values[:, i])
-        lower_bound = stats.chi2.ppf(0.025, df=dof) * (mean / dof)
-        upper_bound = stats.chi2.ppf(0.975, df=dof) * (mean / dof)
-        confidence_intervals.append((lower_bound, upper_bound))
-
-    # Identify anomalies (values outside the confidence interval)
-    anomalies = []
-    for i in range(sigma2_values.shape[1]):
-        lower, upper = confidence_intervals[i]
-        anomalies.append((sigma2_values[:, i] < lower) | (sigma2_values[:, i] > upper))
-
     # Plot histograms for each column
-    fig, axes = plt.subplots(3, 1, figsize=(8, 12))
+    fig, axes = plt.subplots(2, 1, figsize=(8, 6))
 
     for i, ax in enumerate(axes):
         ax.hist(sigma2_values[:, i], bins=300, alpha=0.7, color='blue', label=f'Column {i+1}')
-        ax.axvline(confidence_intervals[i][0], color='red', linestyle='dashed', label='Lower 95% CI (Chi²)')
-        ax.axvline(confidence_intervals[i][1], color='green', linestyle='dashed', label='Upper 95% CI (Chi²)')
-        ax.set_title(f'Histogram of Column {i+1} (Chi² Distribution)')
         ax.set_xlabel('Value')
         ax.set_ylabel('Frequency')
         ax.legend()
-
+        ax.set_xlim(0, 2e8)
     plt.tight_layout()
     plt.show()
 
 # Example usage:
-plot_anomalies_histogram_chi2(sigma2_values, dof=499)
+plot_anomalies_histogram_chi2(sigma2_values)
 
+h = sns.jointplot(x=sigma2_values[:, 1], y=sigma2_values[:, 0], kind='kde')
+h.set_axis_labels("X1", "Y")
+plt.show()
 
+# Convert to uniform distribution using empirical CDF
+U_x = stats.rankdata(sigma2_values[:, 0]) / (len(sigma2_values) + 1)
+U_y = stats.rankdata(sigma2_values[:, 1]) / (len(sigma2_values) + 1)
 
-plot_anomalies_histogram(sigma2_values)
+Z_x = stats.norm.ppf(U_x)
+Z_y = stats.norm.ppf(U_y)
+
+# Compute empirical correlation (copula correlation)
+copula_corr = np.corrcoef(Z_x, Z_y)[0, 1]
+
+# Step 3: Define Gaussian Copula Function
+def gaussian_copula_pdf(U_x, U_y, rho):
+    """Compute Gaussian copula density."""
+    norm_x = stats.norm.ppf(U_x)
+    norm_y = stats.norm.ppf(U_y)
+    joint_pdf = stats.multivariate_normal.pdf(
+        np.column_stack((norm_x, norm_y)),
+        mean=[0, 0],
+        cov=[[1, rho], [rho, 1]]
+    )
+    marginal_pdf_x = stats.norm.pdf(norm_x)
+    marginal_pdf_y = stats.norm.pdf(norm_y)
+    return joint_pdf / (marginal_pdf_x * marginal_pdf_y)
+
+# Compute Gaussian copula density
+copula_density = gaussian_copula_pdf(U_x, U_y, copula_corr)
+
+# Step 4: Visualize Copula Density
+plt.figure(figsize=(8, 6))
+scatter = plt.scatter(U_x, U_y, c=copula_density, cmap="coolwarm", edgecolors='k', alpha=0.75)
+plt.colorbar(scatter, label="Copula Density")
+plt.xlabel("U_x (Uniform Transformed)")
+plt.ylabel("U_y (Uniform Transformed)")
+plt.title("Gaussian Copula Density")
+plt.show()
+
+import numpy as np
+import scipy.stats as stats
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Step 1: Convert to Uniform Marginals using Empirical CDF
+U_x = stats.rankdata(sigma2_values[:, 0]) / (len(sigma2_values) + 1)
+U_y = stats.rankdata(sigma2_values[:, 1]) / (len(sigma2_values) + 1)
+
+# Step 2: Estimate Gumbel Copula Parameter (Theta)
+tau, _ = stats.kendalltau(U_x, U_y)  # Estimate Kendall's Tau
+theta = 1 / (1 - tau)  # Gumbel parameter (theta >= 1)
+
+# Step 3: Define Gumbel Copula CDF
+def gumbel_copula_cdf(U_x, U_y, theta):
+    """Compute the Gumbel Copula CDF."""
+    U_x = np.clip(U_x, 1e-10, 1 - 1e-10)  # Avoid log(0)
+    U_y = np.clip(U_y, 1e-10, 1 - 1e-10)
+    W = (-np.log(U_x))**theta + (-np.log(U_y))**theta
+    return np.exp(-W**(1/theta))
+
+# Compute Gumbel Copula Values
+copula_cdf_values = gumbel_copula_cdf(U_x, U_y, theta)
+
+# Step 4: Visualize the Gumbel Copula
+plt.figure(figsize=(8, 6))
+scatter = plt.scatter(U_x, U_y, c=copula_cdf_values, cmap="coolwarm", edgecolors='k', alpha=0.75)
+plt.colorbar(scatter, label="Gumbel Copula CDF")
+plt.xlabel("U_x (Uniform Transformed)")
+plt.ylabel("U_y (Uniform Transformed)")
+plt.title("Gumbel Copula CDF (Upper Tail Dependence)")
+plt.show()
 
 
 # Convert data into a DataFrame for ARIMAX fitting
@@ -223,3 +274,52 @@ fitted_model.summary()
 df['y_fitted'] = fitted_model.fittedvalues
 
 
+
+# Function to generate correlated p-values using a Gaussian copula
+def generate_correlated_pvalues(n, rho):
+    """Generate n sets of correlated p-values with correlation rho."""
+    mean = [0, 0]  # Mean vector for multivariate normal
+    cov = [[1, rho],  # Covariance matrix (controls dependence)
+           [rho, 1]]
+    
+    
+    mvn_samples = np.random.multivariate_normal(mean, cov, size=n)
+    
+    # Convert normal samples to uniform (via CDF)
+    uniform_samples = stats.norm.cdf(mvn_samples)
+    
+    return uniform_samples  
+
+# Function to compute combined p-value using Gaussian copula
+def copula_combined_pvalue(p_values):
+    """Compute the combined p-value using a Gaussian copula."""
+    k = len(p_values)  # Number of p-values
+    empirical_cdf = np.mean(np.all(p_values >= p_values, axis=1))  # Empirical copula
+    return 1 - empirical_cdf
+
+# Generate 5 sets of correlated p-values with ρ=0.5
+np.random.seed(42)
+p_values_sample = generate_correlated_pvalues(n=5, rho=0.5)
+
+# Compute combined p-value for each time step
+combined_p_values = np.array([copula_combined_pvalue(p) for p in p_values_sample])
+
+# Set anomaly threshold
+alpha = 0.05  # Significance level
+
+# Identify anomalies
+anomalies = combined_p_values < alpha
+
+# Display results
+import pandas as pd
+import ace_tools as tools
+
+df = pd.DataFrame({
+    "p1": p_values_sample[:, 0],
+    "p2": p_values_sample[:, 1],
+    "p3": p_values_sample[:, 2],
+    "Combined p-value": combined_p_values,
+    "Anomaly?": anomalies
+})
+
+tools.display_dataframe_to_user(name="Copula-Based p-Value Pooling", dataframe=df)
