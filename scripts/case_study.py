@@ -32,7 +32,6 @@ def read_time_series(file_name):
     return eq_raw
 
 
-
 def break_time_series(eq_raw):
     segments = []
     segment_start_idx = 0
@@ -80,6 +79,7 @@ def plot_time_series_segments(segments, path):
 eq_raw_afi = read_time_series(file_name = r"data\fdsnws-dataselect_2024-10-22t00_42_55z_AFI.csv")
 eq_seperate_list_afi = break_time_series(eq_raw_afi)
 plot_time_series_segments(segments=eq_seperate_list_afi, path=r"C:\Users\Sina.Mokhtar.XLSCIENTIFIC\Documents\Problems\Copula_AD\figures\afi.png")
+eq_seperate_list_afi[0].to_csv(r"C:\Users\Sina.Mokhtar.XLSCIENTIFIC\Documents\Problems\Copula_AD\processedData\afi.csv")
 
 eq_raw_tara = read_time_series(file_name = r"data\fdsnws-dataselect_2024-10-22t01_39_26z_TARA.csv")
 eq_seperate_list_tara = break_time_series(eq_raw_tara)
