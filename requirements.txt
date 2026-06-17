@@ -1,9 +1,0 @@
-numpy==1.26.4
-statsmodels
-pandas
-matplotlib
-fastdtw
-scipy
-pmdarima==2.0.4
-copulas
-seaborn
