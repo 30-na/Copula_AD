@@ -1,3 +1,7 @@
 data/
 processedData/
 training_windows/
+AD_env/ 
+data/
+results/
+archive/
