@@ -4,12 +4,13 @@ UCR anomaly files encode the labeled anomaly interval in the file name:
 
     ..._<train_end>_<anomaly_start>_<anomaly_end>.txt
 
-This script converts one selected UCR series into the same format used by the
-simulated data scripts:
+This optional helper converts one selected UCR series into CSV files for a
+single-dataset manual run. The full benchmark workflow is in
+src/07_run_ucr_all.py.
 
 Outputs:
-  - data/benchmark/ucr/ucr_series.csv
-  - data/benchmark/ucr/ucr_labels.csv
+  - results/benchmark/ucr_single/ucr_series.csv
+  - results/benchmark/ucr_single/ucr_labels.csv
   - results/figures/ucr_series.png
 """
 
@@ -133,9 +134,9 @@ def main() -> None:
     parser.add_argument("--extract-dir", default="data/raw/ucr/extracted")
     parser.add_argument("--dataset-name", help="Optional text to match in the UCR file name.")
     parser.add_argument("--file-index", type=int, default=0)
-    parser.add_argument("--output", default="data/benchmark/ucr/ucr_series.csv")
-    parser.add_argument("--labels-output", default="data/benchmark/ucr/ucr_labels.csv")
-    parser.add_argument("--plot", default="results/figures/ucr_series.png")
+    parser.add_argument("--output", default="results/benchmark/ucr_single/ucr_series.csv")
+    parser.add_argument("--labels-output", default="results/benchmark/ucr_single/ucr_labels.csv")
+    parser.add_argument("--plot", default="results/benchmark/ucr_single/figures/ucr_series.png")
     args = parser.parse_args()
 
     zip_path = Path(args.zip_path)

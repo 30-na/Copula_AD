@@ -6,9 +6,9 @@ training-based threshold:
     threshold = mean(training scores) + k * std(training scores)
 
 Outputs:
-  - results/benchmark/sigma2_metrics.csv
-  - results/benchmark/sigma2_predictions.csv
-  - results/figures/sigma2_evaluation.png
+  - results/benchmark/ucr_single/sigma2_metrics.csv
+  - results/benchmark/ucr_single/sigma2_predictions.csv
+  - results/benchmark/ucr_single/figures/sigma2_evaluation.png
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from sklearn.metrics import roc_auc_score
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path.cwd() / ".matplotlib"))
 import matplotlib
@@ -33,6 +34,8 @@ def read_sigma2(path: Path, score_column: str) -> pd.DataFrame:
     for column in ["window_start", "window_end"]:
         if column in df.columns:
             df[column] = pd.to_datetime(df[column])
+    if "is_point_score" in df.columns:
+        df["is_point_score"] = df["is_point_score"].astype(bool)
     if score_column not in df.columns:
         raise ValueError(f"Score column '{score_column}' not found in {path}")
     return df
@@ -57,6 +60,9 @@ def align_labels_to_scores(labels: pd.DataFrame, score_index: pd.Index) -> pd.Da
 
 
 def labels_by_window_overlap(sigma2_df: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
+    if "is_point_score" in sigma2_df.columns and sigma2_df["is_point_score"].fillna(False).all():
+        return align_labels_to_scores(labels, sigma2_df.index)
+
     if "window_start" not in sigma2_df.columns or "window_end" not in sigma2_df.columns:
         return align_labels_to_scores(labels, sigma2_df.index)
 
@@ -107,6 +113,15 @@ def compute_predictions(
     threshold = float(train_scores.mean() + k * train_scores.std(ddof=0))
     predictions = pd.DataFrame(index=sigma2_df.index)
     predictions["score"] = sigma2_df[score_column]
+    for column in sigma2_df.columns:
+        if (
+            column in {"residual_mean", "innovation_mean", "predicted_mean", "is_point_score"}
+            or column.endswith("_residual")
+            or column.endswith("_innovation")
+            or column.endswith("_predicted")
+            or column.endswith("_window_count")
+        ):
+            predictions[column] = sigma2_df[column]
     predictions["is_anomaly"] = aligned_labels["is_anomaly"].astype(int)
     predictions["is_predicted"] = (predictions["score"] > threshold).astype(int)
     predictions["threshold"] = threshold
@@ -114,8 +129,10 @@ def compute_predictions(
 
 
 def compute_metrics(predictions: pd.DataFrame) -> dict[str, float | int | str]:
-    y_true = predictions["is_anomaly"].to_numpy(dtype=int)
-    y_pred = predictions["is_predicted"].to_numpy(dtype=int)
+    valid = predictions["score"].notna()
+    valid_predictions = predictions.loc[valid]
+    y_true = valid_predictions["is_anomaly"].to_numpy(dtype=int)
+    y_pred = valid_predictions["is_predicted"].to_numpy(dtype=int)
 
     tp = int(((y_true == 1) & (y_pred == 1)).sum())
     fp = int(((y_true == 0) & (y_pred == 1)).sum())
@@ -126,8 +143,12 @@ def compute_metrics(predictions: pd.DataFrame) -> dict[str, float | int | str]:
     recall = tp / (tp + fn) if (tp + fn) else 0.0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) else 0.0
 
-    anomaly_times = predictions.index[predictions["is_anomaly"] == 1]
-    predicted_times = predictions.index[predictions["is_predicted"] == 1]
+    auroc = np.nan
+    if len(np.unique(y_true)) > 1:
+        auroc = float(roc_auc_score(y_true, valid_predictions["score"].to_numpy(dtype=float)))
+
+    anomaly_times = valid_predictions.index[valid_predictions["is_anomaly"] == 1]
+    predicted_times = valid_predictions.index[valid_predictions["is_predicted"] == 1]
     detection_delay_seconds = np.nan
 
     if len(anomaly_times) > 0 and len(predicted_times) > 0:
@@ -147,7 +168,68 @@ def compute_metrics(predictions: pd.DataFrame) -> dict[str, float | int | str]:
         "precision": precision,
         "recall": recall,
         "f1": f1,
+        "auc_roc": auroc,
         "detection_delay_seconds": detection_delay_seconds,
+    }
+
+
+def compute_ucr_metric(
+    sigma2_df: pd.DataFrame,
+    score_column: str,
+    anomaly_start: int,
+    anomaly_end: int,
+) -> dict[str, float | int | str]:
+    """Compute the official UCR one-location scoring rule.
+
+    The UCR anomaly benchmark asks each method to return one integer location P.
+    A dataset is scored as correct when P falls inside the relaxed interval:
+
+        min(begin - L, begin - 100) < P < max(end + L, end + 100)
+
+    where L = end - begin + 1. For windowed scores, we use the center of the
+    highest-scoring window as P.
+    """
+    if score_column not in sigma2_df.columns:
+        raise ValueError(f"Score column '{score_column}' not found in sigma2 data.")
+
+    scores = sigma2_df[score_column].dropna()
+    if scores.empty:
+        return {
+            "ucr_prediction_index": np.nan,
+            "ucr_prediction_score": np.nan,
+            "ucr_correct_start": np.nan,
+            "ucr_correct_end": np.nan,
+            "ucr_correct": 0,
+        }
+
+    best_label = scores.idxmax()
+    best_row = sigma2_df.loc[best_label]
+    best_score = float(best_row[score_column])
+
+    if "is_point_score" in sigma2_df.columns and bool(best_row["is_point_score"]):
+        prediction_index = int(sigma2_df.index.get_loc(best_label))
+    elif "window_start" in sigma2_df.columns and "window_end" in sigma2_df.columns:
+        window_start = pd.Timestamp(best_row["window_start"])
+        window_end = pd.Timestamp(best_row["window_end"])
+        if window_start == window_end:
+            prediction_index = int(sigma2_df.index.get_loc(best_label))
+        else:
+            prediction_time = window_start + (window_end - window_start) / 2
+            prediction_index = int(round((prediction_time - sigma2_df.index[0]).total_seconds()))
+    else:
+        prediction_index = int(sigma2_df.index.get_loc(best_label))
+
+    anomaly_length = anomaly_end - anomaly_start + 1
+    correct_start = min(anomaly_start - anomaly_length, anomaly_start - 100)
+    correct_end = max(anomaly_end + anomaly_length, anomaly_end + 100)
+    is_correct = int(correct_start < prediction_index < correct_end)
+
+    return {
+        "ucr_prediction_index": prediction_index,
+        "ucr_prediction_score": best_score,
+        "ucr_correct_start": correct_start,
+        "ucr_correct_end": correct_end,
+        "ucr_correct": is_correct,
     }
 
 
@@ -198,13 +280,13 @@ def plot_evaluation(predictions: pd.DataFrame, output_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate sigma2 anomaly scores.")
-    parser.add_argument("--sigma2", default="results/benchmark/ucr_sigma2_values.csv")
-    parser.add_argument("--labels", default="data/benchmark/ucr/ucr_labels.csv")
+    parser.add_argument("--sigma2", default="results/benchmark/ucr_single/sigma2_values.csv")
+    parser.add_argument("--labels", default="results/benchmark/ucr_single/ucr_labels.csv")
     parser.add_argument("--score-column", default="sigma2_mean")
     parser.add_argument("--k", type=float, default=3.0)
-    parser.add_argument("--metrics-output", default="results/benchmark/sigma2_metrics.csv")
-    parser.add_argument("--predictions-output", default="results/benchmark/sigma2_predictions.csv")
-    parser.add_argument("--plot", default="results/figures/sigma2_evaluation.png")
+    parser.add_argument("--metrics-output", default="results/benchmark/ucr_single/sigma2_metrics.csv")
+    parser.add_argument("--predictions-output", default="results/benchmark/ucr_single/sigma2_predictions.csv")
+    parser.add_argument("--plot", default="results/benchmark/ucr_single/figures/sigma2_evaluation.png")
     args = parser.parse_args()
 
     sigma2_df = read_sigma2(Path(args.sigma2), args.score_column)
