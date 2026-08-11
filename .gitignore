@@ -1,7 +1,9 @@
-data/
+data/*
+!data/reference/
 processedData/
 training_windows/
-AD_env/ 
-data/
+AD_env/
 results/
 archive/
+__pycache__/
+*.pyc

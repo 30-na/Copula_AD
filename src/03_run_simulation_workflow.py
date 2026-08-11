@@ -23,6 +23,7 @@ from sigma2_workflow_helper import (
     parse_order,
     plot_combined,
     plot_sigma2,
+    preprocess_stationary_series,
     read_labels,
     read_timeseries,
 )
@@ -30,7 +31,11 @@ from sigma2_workflow_helper import (
 
 def make_run_name(args: argparse.Namespace, order: tuple[int, int, int]) -> str:
     arima_name = "".join(str(value) for value in order)
-    return f"simulation_w{args.window_size}_s{args.stride}_arima{arima_name}"
+    if args.preprocessing_mode == "raw":
+        preproc_name = f"raw-w{args.window_size}-s{args.stride}"
+    else:
+        preproc_name = args.period_method
+    return f"simulation_period-{preproc_name}_arima{arima_name}"
 
 
 def configure_output_paths(args: argparse.Namespace, order: tuple[int, int, int]) -> None:
@@ -53,23 +58,61 @@ def main() -> None:
     parser.add_argument("--run-output-dir", help="Optional simulation output folder for this run.")
     parser.add_argument("--output", help="Optional sigma2 output CSV path.")
     parser.add_argument("--plot", help="Optional combined plot output path.")
-    parser.add_argument("--window-size", type=int, default=200)
-    parser.add_argument("--stride", type=int, default=50)
+    parser.add_argument(
+        "--window-size",
+        type=int,
+        default=200,
+        help="Window size. Used directly in raw mode, otherwise a fallback if no cycle is found.",
+    )
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=50,
+        help="Stride. Used directly in raw mode, otherwise a fallback if no cycle is found.",
+    )
+    parser.add_argument(
+        "--preprocessing-mode",
+        choices=["raw", "seasonal_diff"],
+        default="seasonal_diff",
+        help="raw keeps --window-size/--stride and skips seasonal differencing.",
+    )
+    parser.add_argument("--period-method", choices=["autocorr", "fft"], default="autocorr")
     parser.add_argument("--order", nargs=3, type=int, default=[1, 0, 1])
     parser.add_argument("--skip-plot", action="store_true")
     args = parser.parse_args()
 
     order = parse_order(args.order)
     configure_output_paths(args, order)
-    df = read_timeseries(Path(args.input))
+    raw_df = read_timeseries(Path(args.input))
     labels = read_labels(Path(args.labels))
-    sigma2_df, residual_series = compute_sigma2(
-        df,
-        window_size=args.window_size,
-        stride=args.stride,
+    processed_df, preprocessing = preprocess_stationary_series(
+        raw_df,
+        period_method=args.period_method,
+        fallback_window_size=args.window_size,
+        fallback_stride=args.stride,
+        preprocessing_mode=args.preprocessing_mode,
+    )
+    window_size = int(preprocessing["window_size"])
+    stride = int(preprocessing["stride"])
+    raw_sigma2_df, raw_residual_series = compute_sigma2(
+        raw_df,
+        window_size=window_size,
+        stride=stride,
         order=order,
     )
+    sigma2_df = raw_sigma2_df
+    residual_series = raw_residual_series
+    if bool(preprocessing["seasonal_adjustment"]):
+        sigma2_df, residual_series = compute_sigma2(
+            processed_df,
+            window_size=window_size,
+            stride=stride,
+            order=order,
+        )
     window_results = build_window_results(sigma2_df, labels)
+    raw_window_results = window_results
+    if bool(preprocessing["seasonal_adjustment"]):
+        raw_window_results = build_window_results(raw_sigma2_df, labels)
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -77,6 +120,14 @@ def main() -> None:
 
     print(f"Run name: {args.run_name}")
     print(f"Simulation output: {args.run_output_dir}")
+    print(
+        "Preprocessing:",
+        f"method={preprocessing['period_method']},",
+        f"estimated_period={preprocessing['estimated_period']},",
+        f"seasonal_adjustment={preprocessing['seasonal_adjustment']},",
+        f"window_size={preprocessing['window_size']},",
+        f"stride={preprocessing['stride']}",
+    )
     print(f"Saved window results to {output_path}")
 
     if labels is not None and "is_anomaly" in labels.columns:
@@ -88,6 +139,7 @@ def main() -> None:
             window_results,
             anomaly_start=int(labels["is_anomaly"].to_numpy(dtype=int).argmax()),
             anomaly_end=int(len(labels) - 1 - labels["is_anomaly"].to_numpy(dtype=int)[::-1].argmax()),
+            reference_start_time=raw_df.index[0],
         )
         print(
             "UCR evaluation:",
@@ -98,10 +150,12 @@ def main() -> None:
 
         if not args.skip_plot:
             plot_combined(
-                raw_df=df,
+                raw_df=raw_df,
                 residual_series=residual_series,
                 predictions=window_results,
                 labels=labels,
+                raw_residual_series=raw_residual_series,
+                raw_predictions=raw_window_results,
                 title=f"Simulation {args.run_name}",
                 output_path=Path(args.plot),
             )
