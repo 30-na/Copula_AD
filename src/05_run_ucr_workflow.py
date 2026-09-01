@@ -73,7 +73,7 @@ def build_run_config(
 
 def find_prepared_datasets(prepared_dir: Path) -> list[dict[str, Path | str]]:
     datasets = []
-    for timeseries_path in sorted(prepared_dir.glob("by_category/*/*/timeseries.csv")):
+    for timeseries_path in sorted(prepared_dir.glob("*/*/timeseries.csv")):
         dataset_dir = timeseries_path.parent
         labels_path = dataset_dir / "labels.csv"
         if not labels_path.exists():
@@ -255,30 +255,30 @@ def write_summaries(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run sigma2 workflow on all prepared UCR datasets.")
-    parser.add_argument("--prepared-dir", default="data/ucr/prepared")
+    parser.add_argument("--prepared-dir", default="data/ucr_prepared")
     parser.add_argument("--run-name", help="Optional base name for parameter comparisons.")
     parser.add_argument("--run-output-dir", help="Optional parent folder for all run folders.")
     parser.add_argument("--overall-summary-output", help="Optional CSV path or parent folder for overall summaries.")
     parser.add_argument(
         "--window-size",
         type=int,
-        default=200,
+        default=100,
         help="Window size. Used directly in raw mode, otherwise a fallback if no cycle is found.",
     )
     parser.add_argument(
         "--stride",
         type=int,
-        default=50,
+        default=100,
         help="Stride. Used directly in raw mode, otherwise a fallback if no cycle is found.",
     )
     parser.add_argument(
         "--preprocessing-mode",
         choices=["raw", "seasonal_diff"],
-        default="seasonal_diff",
+        default="raw",
         help="raw keeps --window-size/--stride and skips seasonal differencing.",
     )
     parser.add_argument("--period-method", choices=["autocorr", "fft"], default="autocorr")
-    parser.add_argument("--order", nargs=3, type=int, default=[1, 1, 1])
+    parser.add_argument("--order", nargs=3, type=int, default=[3, 1, 3])
     parser.add_argument("--limit", type=int, help="Optional maximum number of datasets to process.")
     parser.add_argument("--skip-plot", action="store_true")
     args = parser.parse_args()

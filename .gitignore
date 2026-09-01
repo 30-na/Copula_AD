@@ -4,6 +4,10 @@ processedData/
 training_windows/
 AD_env/
 results/
-archive/
+
 __pycache__/
 *.pyc
+results/**
+!results/**/
+!results/**/overall_evaluation.csv
+.matplotlib/

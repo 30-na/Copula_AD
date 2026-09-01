@@ -67,17 +67,17 @@ def main() -> None:
     parser.add_argument(
         "--stride",
         type=int,
-        default=50,
+        default=200,
         help="Stride. Used directly in raw mode, otherwise a fallback if no cycle is found.",
     )
     parser.add_argument(
         "--preprocessing-mode",
         choices=["raw", "seasonal_diff"],
-        default="seasonal_diff",
+        default="raw",
         help="raw keeps --window-size/--stride and skips seasonal differencing.",
     )
     parser.add_argument("--period-method", choices=["autocorr", "fft"], default="autocorr")
-    parser.add_argument("--order", nargs=3, type=int, default=[1, 0, 1])
+    parser.add_argument("--order", nargs=3, type=int, default=[1, 1, 1])
     parser.add_argument("--skip-plot", action="store_true")
     args = parser.parse_args()
 

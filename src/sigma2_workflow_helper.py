@@ -216,7 +216,7 @@ def create_trailing_windows(
 def fit_arima_window(
     window_values: np.ndarray,
     order: tuple[int, int, int],
-) -> tuple[float, np.ndarray]:
+) -> tuple[float, float, np.ndarray]:
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", ConvergenceWarning)
@@ -227,8 +227,11 @@ def fit_arima_window(
         params = result.params
         if hasattr(params, "index") and "sigma2" in params.index:
             sigma2 = float(params.loc["sigma2"])
+            sigma2_se = float(result.bse.loc["sigma2"])
         else:
             sigma2 = float(params[-1])
+            sigma2_index = result.param_names.index("sigma2")
+            sigma2_se = float(np.asarray(result.bse)[sigma2_index])
 
         predicted_values = np.asarray(result.fittedvalues, dtype=float)
         if len(predicted_values) != len(window_values):
@@ -237,9 +240,9 @@ def fit_arima_window(
             predicted_values = padded
 
         residuals = np.asarray(window_values, dtype=float) - predicted_values
-        return sigma2, residuals
+        return sigma2, sigma2_se, residuals
     except Exception:
-        return np.nan, np.full(len(window_values), np.nan, dtype=float)
+        return np.nan, np.nan, np.full(len(window_values), np.nan, dtype=float)
 
 
 def compute_sigma2(
@@ -255,14 +258,16 @@ def compute_sigma2(
     windows = create_trailing_windows(series, window_size, stride)
 
     sigma2_values = []
+    sigma2_se_values = []
     window_starts = []
     window_ends = []
     residual_sum = np.zeros(len(series), dtype=float)
     residual_count = np.zeros(len(series), dtype=float)
 
     for window in tqdm(windows, desc="Fitting ARIMA windows"):
-        sigma2, residuals = fit_arima_window(window.to_numpy(), order)
+        sigma2, sigma2_se, residuals = fit_arima_window(window.to_numpy(), order)
         sigma2_values.append(sigma2)
+        sigma2_se_values.append(sigma2_se)
         window_starts.append(window.index[0])
         window_ends.append(window.index[-1])
 
@@ -282,6 +287,7 @@ def compute_sigma2(
             "window_start": window_starts,
             "window_end": window_ends,
             "sigma2": sigma2_values,
+            "sigma2_se": sigma2_se_values,
         },
         index=pd.Index(window_ends, name="time"),
     )
@@ -316,6 +322,7 @@ def build_window_results(
     results["window_start"] = sigma2_df["window_start"]
     results["window_end"] = sigma2_df["window_end"]
     results["sigma2"] = sigma2_df["sigma2"]
+    results["sigma2_se"] = sigma2_df["sigma2_se"]
     results["actual_anomaly"] = 0
     results["predicted_anomaly"] = 0
 
@@ -472,6 +479,22 @@ def plot_sigma2_scores(ax: Axes, predictions: pd.DataFrame) -> None:
     if sigma2_scores.empty:
         return
 
+    if "sigma2_se" in predictions.columns:
+        sigma2_se = predictions.loc[sigma2_scores.index, "sigma2_se"].astype(float)
+        valid_uncertainty = sigma2_se.notna()
+        if valid_uncertainty.any():
+            uncertainty_index = sigma2_scores.index[valid_uncertainty]
+            uncertainty_scores = sigma2_scores.loc[uncertainty_index].astype(float)
+            uncertainty_se = sigma2_se.loc[uncertainty_index]
+            ax.fill_between(
+                uncertainty_index,
+                uncertainty_scores - uncertainty_se,
+                uncertainty_scores + uncertainty_se,
+                color="#4c78a8",
+                alpha=0.2,
+                label="sigma2 +/- 1 SE",
+            )
+
     ax.plot(
         sigma2_scores.index,
         sigma2_scores,
@@ -489,15 +512,7 @@ def plot_sigma2(
     output_path: Path,
 ) -> None:
     fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(
-        sigma2_df.index,
-        sigma2_df["sigma2"],
-        marker="o",
-        markersize=3,
-        linewidth=0.8,
-        color="black",
-        label="sigma2",
-    )
+    plot_sigma2_scores(ax, sigma2_df)
 
     if labels is not None and "is_anomaly" in labels.columns:
         anomaly_times = labels.index[labels["is_anomaly"] == 1]

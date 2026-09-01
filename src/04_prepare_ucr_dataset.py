@@ -8,11 +8,11 @@ This script:
   5. groups prepared datasets by anomaly category.
 
 Prepared output structure:
-  - data/raw/ucr/UCR_TimeSeriesAnomalyDatasets2021.zip
-  - data/raw/ucr/anomaly_types.csv
-  - data/raw/ucr/extracted/
-  - data/ucr/prepared/by_category/<category>/<dataset>/timeseries.csv
-  - data/ucr/prepared/by_category/<category>/<dataset>/labels.csv
+  - data/ucr_raw/UCR_TimeSeriesAnomalyDatasets2021.zip
+  - data/ucr_raw/anomaly_types.csv
+  - data/ucr_raw/*.txt
+  - data/ucr_prepared/<category>/<dataset>/timeseries.csv
+  - data/ucr_prepared/<category>/<dataset>/labels.csv
 """
 
 from __future__ import annotations
@@ -55,9 +55,24 @@ def extract_zip(zip_path: Path, extract_dir: Path) -> None:
         print(f"Using existing extracted folder: {extract_dir}")
         return
 
-    print(f"Extracting {zip_path}")
+    print(f"Extracting UCR .txt files from {zip_path}")
     with zipfile.ZipFile(zip_path, "r") as archive:
-        archive.extractall(extract_dir)
+        members = [
+            member
+            for member in archive.infolist()
+            if member.filename.lower().endswith(".txt")
+            and "/ucr_anomaly_fulldata/" in member.filename.lower()
+        ]
+        if not members:
+            raise FileNotFoundError("No .txt files found in UCR_Anomaly_FullData inside the archive.")
+        output_names = [Path(member.filename).name for member in members]
+        if len(output_names) != len(set(output_names)):
+            raise ValueError("The UCR archive contains duplicate .txt file names; cannot flatten safely.")
+
+        for member, output_name in zip(members, output_names):
+            output_path = extract_dir / output_name
+            with archive.open(member, "r") as source, output_path.open("wb") as destination:
+                destination.write(source.read())
     marker.write_text("done", encoding="utf-8")
 
 
@@ -135,7 +150,6 @@ def prepare_one_dataset(
     category = category_by_file.get(source_path.name, "unknown")
     dataset_dir = (
         prepared_dir
-        / "by_category"
         / safe_folder_name(category)
         / dataset_folder_name(source_path, metadata)
     )
@@ -160,10 +174,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Download and prepare all UCR anomaly datasets.")
     parser.add_argument("--ucr-url", default=DEFAULT_UCR_URL)
     parser.add_argument("--category-url", default=DEFAULT_CATEGORY_URL)
-    parser.add_argument("--zip-path", default="data/raw/ucr/UCR_TimeSeriesAnomalyDatasets2021.zip")
-    parser.add_argument("--category-csv", default="data/raw/ucr/anomaly_types.csv")
-    parser.add_argument("--extract-dir", default="data/raw/ucr/extracted")
-    parser.add_argument("--prepared-dir", default="data/ucr/prepared")
+    parser.add_argument("--zip-path", default="data/ucr_raw/UCR_TimeSeriesAnomalyDatasets2021.zip")
+    parser.add_argument("--category-csv", default="data/ucr_raw/anomaly_types.csv")
+    parser.add_argument("--extract-dir", default="data/ucr_raw")
+    parser.add_argument("--prepared-dir", default="data/ucr_prepared")
     parser.add_argument("--limit", type=int, help="Optional maximum number of datasets to prepare.")
     args = parser.parse_args()
 
