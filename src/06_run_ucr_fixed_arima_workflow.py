@@ -7,8 +7,9 @@ The selected dynamics are then held fixed while a concentrated innovation
 variance is computed independently in every train-B and test window.
 
 The variance-ratio statistic is R_w = sigma2_w / sigma2_0.  Both an
-approximate parametric F upper-tail p-value and a train-B empirical-null
-upper-tail p-value are reported for every test window.
+approximate parametric F two-sided p-value and a train-B empirical-null
+two-sided p-value are reported for every test window (matching Eq. 17 of
+the paper: both variance increases and decreases count as anomalous).
 """
 
 from __future__ import annotations
@@ -226,7 +227,11 @@ def score_windows(
         try:
             sigma2, window_df = fixed_window_scale(window, fitted)
             ratio = sigma2 / fitted.reference_sigma2
-            parametric_p = float(stats.f.sf(ratio, window_df, fitted.reference_df))
+            # Two-sided p-value (paper Eq. 17): a ratio far below 1 (variance
+            # dropped) is just as anomalous as a ratio far above 1.
+            lower_tail = float(stats.f.cdf(ratio, window_df, fitted.reference_df))
+            upper_tail = float(stats.f.sf(ratio, window_df, fitted.reference_df))
+            parametric_p = min(1.0, 2.0 * min(lower_tail, upper_tail))
         except Exception:
             sigma2, window_df, ratio, parametric_p = np.nan, 0, np.nan, np.nan
         rows.append(
@@ -253,12 +258,19 @@ def add_empirical_p_values(
     if len(clean) == 0:
         output["empirical_p_value"] = np.nan
         return output
-    output["empirical_p_value"] = [
-        (1.0 + float(np.sum(clean >= ratio))) / (len(clean) + 1.0)
-        if np.isfinite(ratio)
-        else np.nan
-        for ratio in output["variance_ratio"].to_numpy(dtype=float)
-    ]
+    n = len(clean)
+    empirical_p_values = []
+    for ratio in output["variance_ratio"].to_numpy(dtype=float):
+        if not np.isfinite(ratio):
+            empirical_p_values.append(np.nan)
+            continue
+        # Two-sided empirical p-value: same idea as the parametric version,
+        # but the "null distribution" is the train-B calibration ratios
+        # instead of the theoretical F distribution.
+        upper_tail = (1.0 + float(np.sum(clean >= ratio))) / (n + 1.0)
+        lower_tail = (1.0 + float(np.sum(clean <= ratio))) / (n + 1.0)
+        empirical_p_values.append(min(1.0, 2.0 * min(upper_tail, lower_tail)))
+    output["empirical_p_value"] = empirical_p_values
     return output
 
 
@@ -317,7 +329,7 @@ def plot_dataset(
     ax.plot(test_results["window_midpoint"], test_results["parametric_p_value"], label="parametric")
     ax.plot(test_results["window_midpoint"], test_results["empirical_p_value"], label="empirical")
     ax.axhline(0.05, color="red", linestyle="--", label="0.05")
-    ax.set(title="Test upper-tail p-values", ylabel="p-value", ylim=(-0.02, 1.02))
+    ax.set(title="Test two-sided p-values", ylabel="p-value", ylim=(-0.02, 1.02))
     ax.legend()
     ax.grid(alpha=0.25)
 
