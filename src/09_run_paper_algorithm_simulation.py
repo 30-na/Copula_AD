@@ -13,7 +13,7 @@ terms, no empirical calibration -- just the plain algorithm from the paper:
        innovation variance sigma_w^2 (this is the "concentrated scale"
        trick: only sigma^2 is re-estimated per window, nothing else).
     5. Form the ratio R_w = sigma_w^2 / sigma0^2 and compute a TWO-SIDED
-       p-value from the F(n, n0) distribution (paper Eq. 17): both a big
+       p-value from the F(n, n0) distribution (paper Eq. 19): both a big
        increase and a big decrease in variance count as anomalous.
     6. Flag window w as anomalous if p_w < alpha.
 
@@ -43,8 +43,14 @@ Outputs (under --output-dir):
                               ratios and p-values, for the raw data used
                               in `figures/summary.png`
   - fixed_model.json         the fitted reference model (phi, theta, sigma0^2)
-  - figures/summary.png      2-panel figure comparing our method to the
-                              raw-variance baseline, for the paper
+  - figures/summary.png      8-panel figure for the paper. Left column
+                              (a)-(d): the test series, per-window variance,
+                              variance ratio and p-value, our method against
+                              the raw-variance baseline. Right column
+                              (e)-(h): the distributional checks Algorithm 1
+                              rests on -- standardized residuals vs. N(0,1),
+                              n*R_w vs. chi^2_n, R_w vs. F(n, n0), and the
+                              empirical false-positive rate vs. alpha.
 """
 
 from __future__ import annotations
@@ -61,6 +67,10 @@ import pandas as pd
 from scipy import stats
 from statsmodels.tools.sm_exceptions import ConvergenceWarning
 from statsmodels.tsa.arima.model import ARIMA
+
+# Differencing order. The paper's assumption (A1) is that the normal process
+# is stationary and invertible, so the model is a pure ARMA(p, q): d = 0.
+D_ORDER = 0
 
 os.environ.setdefault("MPLCONFIGDIR", str(Path.cwd() / ".matplotlib"))
 import matplotlib
@@ -83,7 +93,7 @@ def load_simulation_data(input_path: Path, labels_path: Path) -> tuple[pd.Series
 # ---------------------------------------------------------------------------
 # Step 2: pick the training/test split. The split point is a fraction of the
 # whole series (train_fraction), NOT "wherever the anomaly happens to
-# start". This matters for two reasons the user asked to fix:
+# start". This matters for two reasons:
 #   - the training segment should be reasonably large, since it has to
 #     support both order selection (AIC) and stable parameter estimates;
 #   - in a real deployment you would not know exactly when an anomaly
@@ -95,12 +105,12 @@ def load_simulation_data(input_path: Path, labels_path: Path) -> tuple[pd.Series
 #     the anomaly, not just "everything after the anomaly starts".
 # We still sanity-check that no anomalous point leaked into the training
 # segment, since that would violate the "training segment is anomaly-free"
-# assumption (A1/A2 in the paper).
+# assumption stated in the paper's Section 4.2.
 # ---------------------------------------------------------------------------
 
 def split_train_test(
     series: pd.Series, labels: pd.DataFrame, train_fraction: float
-) -> tuple[pd.Series, pd.Series, int]:
+) -> tuple[pd.Series, pd.Series]:
     if not 0.0 < train_fraction < 1.0:
         raise ValueError("train_fraction must be strictly between 0 and 1.")
 
@@ -114,19 +124,18 @@ def split_train_test(
             "The training segment contains anomalous points; lower --train-fraction "
             "or move the anomaly later so the training segment stays anomaly-free."
         )
-    return train_segment, test_segment, train_end
+    return train_segment, test_segment
 
 
 # ---------------------------------------------------------------------------
-# Step 3: select ARMA(p, q) orders on the training segment using AIC, with d
-# fixed by the user (paper Section 5.2: "orders p and q are selected using
-# AIC"; the differencing order d is a modeling choice made beforehand, not
-# searched over).
+# Step 3: select ARMA(p, q) orders on the training segment using AIC (paper
+# Section 4.3: "orders p and q are selected using AIC"). The differencing
+# order is fixed at d = 0 -- the paper's assumption (A1) is that the normal
+# process is stationary and invertible, so no differencing is applied.
 # ---------------------------------------------------------------------------
 
 def select_and_fit_reference_model(
     train_segment: pd.Series,
-    d: int,
     max_p: int,
     max_q: int,
 ) -> dict:
@@ -144,20 +153,22 @@ def select_and_fit_reference_model(
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore", ConvergenceWarning)
                     warnings.simplefilter("ignore", UserWarning)
-                    fit = ARIMA(train_values, order=(p, d, q)).fit()
+                    fit = ARIMA(train_values, order=(p, D_ORDER, q)).fit()
             except Exception:
                 continue  # this (p, q) combination failed to fit; skip it
             if np.isfinite(fit.aic) and fit.aic < best_aic:
                 best_aic = fit.aic
                 best_fit = fit
-                best_order = (p, d, q)
+                best_order = (p, D_ORDER, q)
 
     if best_fit is None:
         raise RuntimeError("No ARMA(p, q) model could be fit on the training segment.")
 
-    # best_fit.param_names looks like [ar.L1, ..., ma.L1, ..., sigma2].
-    # We need sigma0^2 (the reference innovation variance) and the REST of
-    # the parameters (phi's and theta's), which we will hold fixed later.
+    # best_fit.param_names looks like [const, ar.L1, ..., ma.L1, ..., sigma2]
+    # (the constant is present because d = 0 makes statsmodels default to
+    # trend='c'). We need sigma0^2 (the reference innovation variance) and
+    # the REST of the parameters -- c_hat, the phi's and the theta's --
+    # which are held fixed per window, as in Algorithm 1 line 5.
     param_names = list(best_fit.param_names)
     params = np.asarray(best_fit.params, dtype=float)
     sigma_index = param_names.index("sigma2")
@@ -166,10 +177,13 @@ def select_and_fit_reference_model(
     fixed_param_names = [name for name in param_names if name != "sigma2"]
     fixed_params = np.delete(params, sigma_index)
 
-    # Reference degrees of freedom for the F-test denominator. We use n0
-    # (training segment length), matching the paper's Eq. 14 exactly (no
-    # subtraction for estimated parameters -- see the discussion with the
-    # user about this being an open question to revisit).
+    # Reference degrees of freedom for the F-test denominator: n0, the
+    # training segment length, matching the paper's Eq. 15 exactly.
+    #
+    # CAVEAT: sigma0^2 is computed on the same data that produced phi_hat
+    # and theta_hat, so chi^2_{n0} is optimistic -- the honest df is closer
+    # to n0 - p - q - 1. The effect is small when n0 is large, but it
+    # inflates the observed false-positive rate slightly above alpha.
     reference_df = len(train_values)
 
     return {
@@ -189,6 +203,8 @@ def select_and_fit_reference_model(
 # ---------------------------------------------------------------------------
 
 def make_nonoverlapping_windows(series: pd.Series, window_size: int) -> list[pd.Series]:
+    # A trailing partial window is dropped: every window must hold exactly n
+    # points for F(n, n0) in Eq. 18 to be the right reference distribution.
     windows = []
     n_windows = len(series) // window_size
     for i in range(n_windows):
@@ -200,14 +216,14 @@ def make_nonoverlapping_windows(series: pd.Series, window_size: int) -> list[pd.
 
 # ---------------------------------------------------------------------------
 # Step 5: for one window, hold phi/theta FIXED at the reference values and
-# re-estimate only sigma_w^2 via the Kalman filter (paper Eq. 10-11). This
+# re-estimate only sigma_w^2 via the Kalman filter (paper Eq. 12-13). This
 # is what statsmodels calls "concentrate_scale": sigma^2 is analytically
 # concentrated out of the likelihood, so .filter() does not re-optimize
 # anything -- it just runs the Kalman filter once with the fixed phi/theta
 # and reads off the resulting scale estimate.
 # ---------------------------------------------------------------------------
 
-def fixed_dynamics_window_variance(window: pd.Series, model_info: dict) -> tuple[float, int, np.ndarray]:
+def fixed_dynamics_window_variance(window: pd.Series, model_info: dict) -> tuple[float, np.ndarray]:
     model = ARIMA(
         window.to_numpy(dtype=float),
         order=model_info["order"],
@@ -220,42 +236,41 @@ def fixed_dynamics_window_variance(window: pd.Series, model_info: dict) -> tuple
         warnings.simplefilter("ignore")
         result = model.filter(model_info["fixed_params"])
 
+    # statsmodels' `scale` with concentrate_scale=True is exactly Eq. 13,
+    # (1/n) * sum_{t in w} v_t^2 / F_t^*, summed over ALL n points of the
+    # window. The process is stationary (assumption A1) and d = 0, so the
+    # Kalman filter starts from the stationary prior a_1 = 0, P_1 = Q_0
+    # (paper Sec. 3.3) and there is no diffuse warm-up to discard: n is
+    # simply the window length, exactly as in the paper.
     sigma2_w = float(result.scale)
-
-    # The first few points of a Kalman filter run are less reliable because
-    # the filter has not "warmed up" yet (statsmodels tracks exactly how
-    # many points to discard as loglikelihood_burn). n is the number of
-    # points actually used, matching Eq. 11's summation over t in window w.
-    burn_in = int(result.filter_results.loglikelihood_burn)
-    n_used = max(1, len(window) - burn_in)
 
     # statsmodels' standardized_forecasts_error is v_t / sqrt(sigma2_w * F_t^*),
     # i.e. it is standardized using THIS window's own re-estimated sigma2_w
-    # (by construction, sum of its squares is always exactly n_used -- a
+    # (by construction, the sum of its squares is always exactly n -- a
     # tautology, not something you can check). To get the version the
-    # paper's assumptions (A2) actually make a falsifiable claim about --
+    # paper's assumption (A2) actually makes a falsifiable claim about --
     # v_t standardized by the REFERENCE/null sigma0^2 -- multiply by
     # sqrt(sigma2_w / sigma0^2) = sqrt(R_w):
     #   v_t/sqrt(sigma0^2 F_t^*) = [v_t/sqrt(sigma2_w F_t^*)] * sqrt(sigma2_w/sigma0^2)
     # The caller does that multiplication (it needs R_w, computed next).
     standardized_residuals = np.asarray(
-        result.filter_results.standardized_forecasts_error[0, burn_in:], dtype=float
+        result.filter_results.standardized_forecasts_error[0], dtype=float
     )
 
-    return sigma2_w, n_used, standardized_residuals
+    return sigma2_w, standardized_residuals
 
 
 # ---------------------------------------------------------------------------
 # Step 5 (continued): variance ratio R_w and its two-sided p-value.
-# Paper Eq. 16-17:
+# Paper Eq. 17 and 19:
 #   R_w = sigma_w^2 / sigma0^2  ~  F(n, n0)   under H0
 #   p_w = 2 * min( F_cdf(R_w), 1 - F_cdf(R_w) )
 # ---------------------------------------------------------------------------
 
-def variance_ratio_two_sided_pvalue(sigma2_w: float, n_used: int, model_info: dict) -> tuple[float, float]:
+def variance_ratio_two_sided_pvalue(sigma2_w: float, window_size: int, model_info: dict) -> tuple[float, float]:
     ratio = sigma2_w / model_info["reference_sigma2"]
-    lower_tail = stats.f.cdf(ratio, n_used, model_info["reference_df"])
-    upper_tail = stats.f.sf(ratio, n_used, model_info["reference_df"])
+    lower_tail = stats.f.cdf(ratio, window_size, model_info["reference_df"])
+    upper_tail = stats.f.sf(ratio, window_size, model_info["reference_df"])
     p_value = min(1.0, 2.0 * min(lower_tail, upper_tail))
     return ratio, p_value
 
@@ -310,8 +325,8 @@ def score_test_windows(
     rows = []
     h0_standardized_residuals_by_window = []
     for i, window in enumerate(windows):
-        sigma2_w, n_used, standardized_residuals = fixed_dynamics_window_variance(window, model_info)
-        ratio, p_value = variance_ratio_two_sided_pvalue(sigma2_w, n_used, model_info)
+        sigma2_w, standardized_residuals = fixed_dynamics_window_variance(window, model_info)
+        ratio, p_value = variance_ratio_two_sided_pvalue(sigma2_w, window_size, model_info)
         # Re-standardize by the REFERENCE sigma0^2 instead of this window's
         # own sigma2_w (see the comment in fixed_dynamics_window_variance) --
         # this is the quantity assumption (A2) actually predicts is N(0,1).
@@ -336,7 +351,7 @@ def score_test_windows(
                 "window_end": window_end,
                 "window_midpoint": window_midpoint,
                 "window_midpoint_index": window_midpoint_index,
-                "n_used": n_used,
+                "n": len(window),
                 "sigma2_w": sigma2_w,
                 "variance_ratio": ratio,
                 "p_value": p_value,
@@ -422,6 +437,18 @@ def format_model_summary(model_info: dict) -> str:
     )
 
 
+def f_critical_values(window_size: int, reference_df: int, alpha: float) -> tuple[float, float]:
+    """The two-sided decision boundary on R_w, drawn on panel (g): the test
+    flags window w when R_w falls below F_{alpha/2}(n, n0) or above
+    F_{1-alpha/2}(n, n0) -- exactly the p_w < alpha rule of Eq. 19, read on
+    the ratio scale.
+    """
+    return (
+        float(stats.f.ppf(alpha / 2, window_size, reference_df)),
+        float(stats.f.ppf(1 - alpha / 2, window_size, reference_df)),
+    )
+
+
 def plot_assumption_checks(
     fig,
     gs,
@@ -433,12 +460,12 @@ def plot_assumption_checks(
 ) -> None:
     """Right-hand column: empirical vs. theoretical distribution checks for
     the three distributional claims Algorithm 1 depends on (paper Sec.
-    6.5-6.6) -- built ONLY from windows that are truly normal (actual_anomaly
+    4.4-4.5) -- built ONLY from windows that are truly normal (actual_anomaly
     == 0), since the anomalous windows are exactly where H0 is expected to
     fail and would bias the check:
       (e) v_t / sqrt(sigma0^2 F_t^*)  ~  N(0,1)          [assumption A2]
       (f) n * R_w = n * sigma_w_hat^2/sigma0^2  ~ chi^2_n [Eq. 15]
-      (g) R_w  ~  F(n, n0)                                [Eq. 16]
+      (g) R_w  ~  F(n, n0)                                [Eq. 18]
     """
     normal_mask = (window_results["actual_anomaly"] == 0).to_numpy()
     normal_positions = np.where(normal_mask)[0]
@@ -447,17 +474,31 @@ def plot_assumption_checks(
         [h0_standardized_residuals_by_window[i] for i in normal_positions]
     ) if len(normal_positions) else np.array([])
 
-    chi2_stat = (window_results.loc[normal_mask, "n_used"] * window_results.loc[normal_mask, "variance_ratio"]).to_numpy()
+    chi2_stat = (window_results.loc[normal_mask, "n"] * window_results.loc[normal_mask, "variance_ratio"]).to_numpy()
     f_stat = window_results.loc[normal_mask, "variance_ratio"].to_numpy()
 
-    hist_kwargs = dict(density=True, color=COLOR_PROPOSED, alpha=0.55, edgecolor="white", linewidth=0.5)
+    hist_kwargs = dict(density=True, color=COLOR_PROPOSED, alpha=0.55, edgecolor="white", linewidth=0.4)
+
+    def n_bins(sample) -> int:
+        # Bin count scales with sample size (Rice rule, 2*N^(1/3)), clamped so
+        # the shape stays readable whether there are 90 windows or 900.
+        return int(np.clip(round(2.0 * len(sample) ** (1 / 3)), 20, 90))
+
+    def draw_two_sided_cutoffs(ax, lower: float, upper: float, label: str) -> None:
+        """Vertical lines at the two-sided alpha/2 critical values: anything
+        outside this band is what the test flags as anomalous."""
+        for i, cut in enumerate((lower, upper)):
+            ax.axvline(
+                cut, color=COLOR_RAW_VARIANCE, linewidth=1.1, linestyle="--",
+                label=label if i == 0 else None,
+            )
 
     # (e) standardized residuals vs. N(0,1)
     ax = fig.add_subplot(gs[0, 1])
     _style_hist_axis(ax)
     if len(pooled_residuals):
-        ax.hist(pooled_residuals, bins=25, **hist_kwargs)
-        grid = np.linspace(*ax.get_xlim(), 200)
+        ax.hist(pooled_residuals, bins=n_bins(pooled_residuals), **hist_kwargs)
+        grid = np.linspace(*ax.get_xlim(), 400)
         ax.plot(grid, stats.norm.pdf(grid), color=COLOR_INK, linewidth=1.2, label="N(0,1)")
     ax.set_title("(e) Standardized Residuals", loc="left", fontsize=10.5, color=COLOR_INK)
     ax.set_xlabel(r"$v_t / \sqrt{\hat\sigma_0^2 F_t^*}$", fontsize=9)
@@ -467,8 +508,8 @@ def plot_assumption_checks(
     ax = fig.add_subplot(gs[1, 1])
     _style_hist_axis(ax)
     if len(chi2_stat):
-        ax.hist(chi2_stat, bins=15, **hist_kwargs)
-        grid = np.linspace(max(0.0, ax.get_xlim()[0]), ax.get_xlim()[1], 200)
+        ax.hist(chi2_stat, bins=n_bins(chi2_stat), **hist_kwargs)
+        grid = np.linspace(max(0.0, ax.get_xlim()[0]), ax.get_xlim()[1], 400)
         ax.plot(grid, stats.chi2.pdf(grid, df=window_size), color=COLOR_INK, linewidth=1.2, label=f"chi2({window_size})")
     ax.set_title("(f) Window Chi-Square Statistic", loc="left", fontsize=10.5, color=COLOR_INK)
     ax.set_xlabel(r"$n\,\hat\sigma_w^2/\hat\sigma_0^2$", fontsize=9)
@@ -478,11 +519,15 @@ def plot_assumption_checks(
     ax = fig.add_subplot(gs[2, 1])
     _style_hist_axis(ax)
     if len(f_stat):
-        ax.hist(f_stat, bins=15, **hist_kwargs)
-        grid = np.linspace(max(0.0, ax.get_xlim()[0]), ax.get_xlim()[1], 200)
+        ax.hist(f_stat, bins=n_bins(f_stat), **hist_kwargs)
+        grid = np.linspace(max(0.0, ax.get_xlim()[0]), ax.get_xlim()[1], 400)
         ax.plot(
             grid, stats.f.pdf(grid, window_size, model_info["reference_df"]),
             color=COLOR_INK, linewidth=1.2, label=f"F({window_size},{model_info['reference_df']})",
+        )
+        draw_two_sided_cutoffs(
+            ax, *f_critical_values(window_size, model_info["reference_df"], alpha),
+            rf"two-sided $\alpha$={alpha}",
         )
     ax.set_title("(g) Variance Ratio (Normal Windows)", loc="left", fontsize=10.5, color=COLOR_INK)
     ax.set_xlabel(r"$R_w = \hat\sigma_w^2/\hat\sigma_0^2$", fontsize=9)
@@ -647,22 +692,21 @@ def main() -> None:
     parser.add_argument("--input", default="data/simulation/simulated_with_anomaly.csv")
     parser.add_argument("--labels", default="data/simulation/simulated_anomaly_labels.csv")
     parser.add_argument("--output-dir", default="results/paper_algorithm_simulation")
-    parser.add_argument("--d", type=int, default=0, help="Differencing order (0 for a stationary AR(1) simulation).")
     parser.add_argument("--max-p", type=int, default=3)
     parser.add_argument("--max-q", type=int, default=3)
     parser.add_argument("--window-size", type=int, default=100)
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument(
-        "--train-fraction", type=float, default=2 / 3,
+        "--train-fraction", type=float, default=0.4,
         help="Fraction of the series used for training; the rest is the test segment.",
     )
     args = parser.parse_args()
 
     series, labels = load_simulation_data(Path(args.input), Path(args.labels))
-    train_segment, test_segment, train_end = split_train_test(series, labels, args.train_fraction)
+    train_segment, test_segment = split_train_test(series, labels, args.train_fraction)
     print(f"Training segment: {len(train_segment)} points, test segment: {len(test_segment)} points")
 
-    model_info = select_and_fit_reference_model(train_segment, args.d, args.max_p, args.max_q)
+    model_info = select_and_fit_reference_model(train_segment, args.max_p, args.max_q)
     print(f"Selected order (p, d, q) = {model_info['order']}, AIC = {model_info['aic']:.2f}")
     print(f"Reference sigma0^2 = {model_info['reference_sigma2']:.4f}")
 
