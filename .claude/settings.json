@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python src/02_add_anomaly.py --start-index 4700 --duration 600 --strength 0.5 --seed 456)"
+    ]
+  }
+}
