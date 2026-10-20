@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2022 German Aerospace Center (DLR e.V.), Ferdinand Rewicki
+#
+# SPDX-License-Identifier: CC0-1.0
+
+repos:
+-   repo: https://github.com/timothycrosley/isort
+    rev: 5.6.4
+    hooks:
+    - id: isort
+-   repo: https://github.com/ambv/black
+    rev: 22.3.0
+    hooks:
+    - id: black
+      language_version: python3.9
+-   repo: https://gitlab.com/pycqa/flake8
+    rev: 3.8.4
+    hooks:
+    - id: flake8
