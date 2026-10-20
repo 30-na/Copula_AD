@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2022 German Aerospace Center (DLR e.V.), Ferdinand Rewicki
+#
+# SPDX-License-Identifier: CC0-1.0
+
+default:
+  image: python:3.9-slim-bullseye
+
+stages:
+  - test
+  - deploy
+
+.startup: &startup
+  - python -m pip install --upgrade pip
+  - apt update
+  - apt install -y make git
+
+unittests:
+  stage: test
+  before_script:
+    - *startup
+    - make dev
+  script:
+    # Run unittests with easier access to the results
+    - pytest --junitxml=report.xml
+    # Run for visualization of the test results
+    - coverage run -m pytest
+    # In case of a failure this allows for manuall checking
+    - coverage report
+    # Generate a xml report which is used for the visualization
+    - coverage xml
+  coverage: '/TOTAL.*\s([.\d]+)%/'
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+
+pages:
+  stage: deploy
+  before_script:
+    - *startup
+  script:
+  - pip install .[docs] --upgrade
+  - sphinx-apidoc -o docs/source merlin
+  - sphinx-build -b html docs/source public
+  artifacts:
+    paths:
+    - public
+  only:
+  - main
+
