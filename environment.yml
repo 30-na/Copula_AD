@@ -1,14 +1,16 @@
+# Main environment: IVR, UCR, simulation, ETHZ baselines/IVR/evaluation.
+# conda env create -f environment.yml
 name: copula-ad
 channels:
   - defaults
 dependencies:
   - python=3.11
   - pip
-  - numpy
-  - pandas
-  - matplotlib
-  - scipy
-  - scikit-learn
-  - statsmodels
-  - tqdm
-  - seaborn
+  - pip:
+      - numpy==2.4.6
+      - pandas==3.0.6
+      - scipy==1.17.1
+      - statsmodels==0.15.0
+      - scikit-learn==1.9.1   # TSB-UAD's metric code
+      - matplotlib==3.11.2
+      - stumpy==1.14.1        # matrix profile (ETHZ baseline)

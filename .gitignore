@@ -1,13 +1,19 @@
-data/*
-!data/reference/
-processedData/
-training_windows/
-AD_env/
-results/
+# Data: downloaded / rebuilt by the scripts (see README)
+data/
 
+# Other people's code: cloned in Setup (see README)
+baselines/
+
+# Results: keep the small tables and figures, not the large raw scores
+results/**/*.npz
+results/**/*.npy
+results/**/*.log
+results/**/log_*.txt
+results/ethz/parts/
+results/ucr/ivr_scores/
+results/ucr/rolling_std_scores/
+
+# Python / tools
 __pycache__/
 *.pyc
-results/**
-!results/**/
-!results/**/overall_evaluation.csv
 .matplotlib/

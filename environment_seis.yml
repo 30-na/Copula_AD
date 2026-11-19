@@ -1,0 +1,19 @@
+# Seismology environment: ETHZ download, deep models (EQTransformer, CRED, DPP), Baer-Kradolfer.
+# conda env create -f environment_seis.yml
+name: seis
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - seisbench==0.12.6
+      - obspy==1.5.1
+      - torch==2.14.1
+      - numpy==2.4.6
+      - pandas==3.1.0
+      - scipy==1.17.1
+      - h5py==3.16.0
+      - fsspec==2026.9.0
+      - aiohttp==3.14.5       # fsspec over https
+      - matplotlib==3.11.2
